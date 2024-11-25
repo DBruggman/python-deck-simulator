@@ -12,6 +12,8 @@ it should always start with a number, even if there are no generic cost values
 
 """
 
+from abc import abstractmethod
+from itertools import cycle
 import re
 
 class FateValue:
@@ -165,7 +167,55 @@ class FateValue:
             self.abundance - other.abundance if self.abundance - other.abundance > min else min
         )
     
-    def spend(self, other:"FateValue") -> "FateValue":
+    def can_afford(self, other:"FateValue") -> bool:
+
+        # if any of the specific values are inadequate to afford
+        if(chaos_diff := self.chaos - other.chaos) < 0: return False
+        if (order_diff := self.order - other.order) < 0: return False
+        if(dearth_diff := self.dearth - other.dearth) < 0: return False
+        if(abundance_diff := self.abundance - other.abundance) < 0: return False
+
+        # the remaining available generic is the sum of the remaining specifics
+        # if that is inadequate, can't afford
+        if(sum([chaos_diff,order_diff,dearth_diff,abundance_diff]) < other.generic): return False
+
+        return True
+
+    class SpendPriority():
+        
+        @abstractmethod
+        @classmethod
+        def spend(cls, c_remaining, o_remaining, d_remaining, a_remaining):
+            pass
+
+    class DefaultPriority(SpendPriority):
+        """
+        default priority is to just spend evenly, one at a time from each category, round robin
+        """
+        def spend(cls, c_remaining, o_remaining, d_remaining, a_remaining, g_remaining, amount_to_spend):
+
+            remaining_vals = [c_remaining, o_remaining, d_remaining, a_remaining]
+
+            while(amount_to_spend > 0 and 
+                  c_remaining > 0 and 
+                  o_remaining > 0 and 
+                  d_remaining > 0 and 
+                  a_remaining > 0 and 
+                  g_remaining > 0):
+                
+                for val in remaining_vals:
+                    if val > 0 and amount_to_spend > 0:
+                        val -= 1
+                        amount_to_spend -= 1
+
+            if amount_to_spend == 0:
+                raise RuntimeError("Resulted in negative amount somehow")
+            
+            return (c_remaining,o_remaining,d_remaining,a_remaining)
+
+        
+
+    def spend(self, other:"FateValue", spend_method = None) -> "FateValue":
         """
         checks if the currentFateValue can 'afford' to spend the passed fate value.
 
@@ -176,14 +226,63 @@ class FateValue:
         if it's able to spend, it returns the difference as a FateValue.
 
         if it isn't able to spend, it returns Nothing.
+
+        the spend_method argument is a function passed as an argument that accepts 
+        self and other and returns the remainder as a FateValue. It should be implemented
+        with the assumption that the cost can be paid, as it's called after a call to
+        self.can_afford returns true.
         """
-        #TODO checks if the current FateValue can 'afford' to spend the passed fate value
-        # returns a copy of a FateValue that is the difference between the two FateValues if possible
-        # if not possible, returns None
+        if self.can_afford(other):
 
+            # calculate what would be left by removing all corresponding values
+            g_diff = self.generic - other.generic
+            c_diff = self.chaos - other.chaos
+            o_diff = self.order - other.order
+            d_diff = self.dearth - other.dearth
+            a_diff = self.abundance - other.abundance
 
+            # if the g_diff is positive or 0, there was enough available generic to pay the whole cost; we're done, return what's left
+            if (g_diff) >= 0: 
+                return FateValue(
+                    generic=g_diff,
+                    chaos=c_diff,
+                    order=o_diff,
+                    dearth=d_diff,
+                    abundance=a_diff
+                    )
+            # if g_diff is negative, there wasn't enough generic available to pay the whole cost, so we'll need to figure out how to
+            # turn the remaining available affinity into generic in order to pay the cost
+            else: 
+                # if no spend_method is passed, default behavior is round-robin starting with coda until it's paid
+                if spend_method is None: 
 
-        pass
+                    # we'll achieve this behavior by going through the list of available aspect values and removing one from them then
+                    # adding one to the g_diff until it comes out to 0, at which point 
+
+                    while g_diff < 0:
+                        for diff in [c_diff,o_diff,d_diff,a_diff]:
+                            if diff <= 0: #skip if there's no affinity of this kind left
+                                continue
+                            else:
+                                diff -= 1
+                                g_diff += 1
+
+                    # at this point the g_diff should be 0 (aka: the generic part was paid)
+                    # so package up whatever's left and return it
+                    return FateValue(
+                        generic= g_diff,
+                        chaos=c_diff,
+                        order=o_diff,
+                        dearth=d_diff,
+                        abundance=a_diff
+                    )
+
+                else: 
+                    return spend_method(self,other)
+        
+        else:
+            return None
+            
 
     def __repr__(self):
         return f'FateValue: {self.value_string} \t generic:{self.generic}, chaos:{self.chaos}, order:{self.order}, dearth:{self.dearth}, dearth:{self.abundance}, converted:{self.get_converted_cost()}'
